@@ -1,0 +1,23 @@
+{
+  "name": "traffic-forecast",
+  "version": "1.0.0",
+  "description": "Traffic Forecast is a full-stack application that predicts traffic congestion using AI models and visualizes the results on an interactive dashboard.",
+  "main": "index.js",
+  "scripts": {},
+  "author": "",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ayoub-bahend/traffic-forecast.git"
+  },
+  "keywords": [],
+  "bugs": {
+    "url": "https://github.com/Ayoub-bahend/traffic-forecast/issues"
+  },
+  "homepage": "https://github.com/Ayoub-bahend/traffic-forecast#readme",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "mapbox-gl": "^3.16.0",
+    "react-map-gl": "^8.1.0"
+  }
+}
