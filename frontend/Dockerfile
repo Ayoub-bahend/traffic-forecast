@@ -5,8 +5,8 @@ WORKDIR /app
 # Copy manifest files (package.json and optionally package-lock.json)
 COPY package*.json ./
 
-# Install deps; prefer npm ci when lockfile present
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+# Install deps (use npm install to avoid strict lockfile mismatch failures in CI/build)
+RUN npm install --no-audit --no-fund
 
 # Copy the rest of the app
 COPY . .

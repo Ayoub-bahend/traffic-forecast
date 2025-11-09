@@ -5,7 +5,10 @@ import json
 
 @lru_cache(maxsize=1)
 def load_fc() -> Dict[str, Any]:
-    path = "/app/app/data/ags.geojson"
+    # Use the BKG municipalities dataset you placed in backend/app/data
+    # Example filename: vg250_gem.geojson (FeatureCollection with properties.AGS and properties.GEN)
+    # If you prefer a different filename (e.g., ags.geojson), update this path accordingly.
+    path = "/app/app/data/vg250_gem.geojson"
     with open(path, "r", encoding="utf-8") as f:
         return cast(Dict[str, Any], json.load(f))
 

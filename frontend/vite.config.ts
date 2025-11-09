@@ -28,7 +28,8 @@ export default defineConfig({
       },
       // Proxy API to FastAPI backend in dev
       "/api": {
-        target: "http://localhost:8000",
+        // When running in Docker Compose, the backend is reachable by service name
+        target: "http://backend:8000",
         changeOrigin: true,
         secure: false
       }

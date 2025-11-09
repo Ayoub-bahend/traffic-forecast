@@ -17,13 +17,16 @@ async def resolve(lat: float = Query(...), lng: float = Query(...)) -> Dict[str,
     ags = str(props.get("AGS") or "")
     if len(ags) != 8 or not ags.isdigit():
         return {"error": "invalid_feature"}
+    # According to the new requirement:
+    # - municipality_code = full AGS (8 digits)
+    # - state_code       = AGS[0:2]
+    # - region_code      = AGS[2]
+    # - district_code    = AGS[3:5]
     return {
-        "ags": ags,
         "state_code": ags[0:2],
         "region_code": ags[2],
         "district_code": ags[3:5],
-        "municipality_code": ags[5:8],
-        "name": props.get("GEN"),
+        "municipality_code": ags
     }
 
 @router.get("/health")
