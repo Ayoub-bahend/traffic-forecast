@@ -21,4 +21,22 @@ export async function predictTraffic(payload: PredictPayload): Promise<any> {
   return data;
 }
 
+type PredictExtendedPayload = {
+  state_code: string;
+  region_code: string;
+  district_code: string;
+  municipality_code: string;
+  timestamp: string; // YYYY-MM-DDTHH:mm
+};
+
+export async function predictTrafficExtended(payload: PredictExtendedPayload): Promise<any> {
+  const { data } = await api.post("/predict/extended", payload);
+  return data;
+}
+
+export async function fetchRiskHeatmap(time: string, limit = 400, stride = 25): Promise<any> {
+  const { data } = await api.get(`/risk-heatmap`, { params: { time, limit, stride } });
+  return data; // GeoJSON FeatureCollection
+}
+
 

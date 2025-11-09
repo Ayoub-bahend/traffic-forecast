@@ -1,9 +1,10 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, useMapEvents } from "react-leaflet";
 import L, { LatLngLiteral } from "leaflet";
 import { useGeoResolver } from "../../hooks/useGeoResolver";
 import { useTrafficForm } from "../../stores/trafficForm";
-import { predictTraffic } from "@services/api";
+import { predictTrafficExtended, fetchRiskHeatmap } from "@services/api";
+import RiskHeatmap from "./RiskHeatmap";
 
 function ClickHandler({
   onLocationSelected
@@ -21,6 +22,7 @@ function ClickHandler({
 export default function Map(): JSX.Element {
   const [marker, setMarker] = useState<LatLngLiteral | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [heat, setHeat] = useState<any | null>(null);
   const { resolve, isResolving, cancel } = useGeoResolver();
   const setForm = useTrafficForm((s) => s.setForm);
   const timestamp = useTrafficForm((s) => s.timestamp);
@@ -57,20 +59,45 @@ export default function Map(): JSX.Element {
 
       // Auto predict if timestamp present
       if (timestamp) {
-        await predictTraffic({
+        await predictTrafficExtended({
           state_code,
           region_code: finalRegion,
           district_code,
           municipality_code,
           timestamp
         });
+        try {
+          const geo = await fetchRiskHeatmap(timestamp);
+          setHeat(geo);
+        } catch {}
       }
     } catch (e: any) {
       if (e?.name === "AbortError") return;
-      // Outside Germany or network error
-      setToast("Sélection hors d’Allemagne ou échec de résolution.");
+      const msg = String(e?.message || "");
+      if (msg.includes("outside_germany")) {
+        setToast("Sélection hors d’Allemagne.");
+      } else {
+        setToast("Résolution indisponible (réseau/données). Réessayez.");
+      }
     }
   }
+
+  // Refresh heatmap whenever the selected timestamp changes
+  useEffect(() => {
+    async function refreshHeat() {
+      if (!timestamp) {
+        setHeat(null);
+        return;
+      }
+      try {
+        const geo = await fetchRiskHeatmap(timestamp);
+        setHeat(geo);
+      } catch {
+        setHeat(null);
+      }
+    }
+    void refreshHeat();
+  }, [timestamp]);
 
   return (
     <div className="space-y-3">
@@ -87,6 +114,7 @@ export default function Map(): JSX.Element {
         />
         <ClickHandler onLocationSelected={handleLocationSelected} />
         {marker && <Marker position={marker} icon={markerIcon.current} />}
+        {heat && <RiskHeatmap geojson={heat} />}
       </MapContainer>
       <div className="text-sm text-gray-600">
         {isResolving

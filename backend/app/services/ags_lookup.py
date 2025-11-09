@@ -17,7 +17,17 @@ def lookup_by_point(lat: float, lng: float) -> Optional[Dict[str, Any]]:
     p = Point(lng, lat)
     for feature in fc.get("features", []):
         geom = shape(feature.get("geometry"))
-        if geom.contains(p):
+        # Use 'covers' so that points on polygon boundaries are included
+        if geom.covers(p):
+            return feature
+    return None
+
+def feature_by_ags(ags: str) -> Optional[Dict[str, Any]]:
+    """Return feature by exact AGS match."""
+    fc = load_fc()
+    for feature in fc.get("features", []):
+        props = feature.get("properties", {})
+        if str(props.get("AGS") or "") == ags:
             return feature
     return None
 

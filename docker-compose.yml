@@ -7,8 +7,11 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./backend/app/data:/app/app/data
+      - ./backend/model.pkl:/app/backend/model.pkl
+      - ./data/data.csv:/app/app/data/data.csv:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - MODEL_PATH=/app/backend/model.pkl
 
   frontend:
     build: ./frontend
