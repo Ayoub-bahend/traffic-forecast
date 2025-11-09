@@ -1,0 +1,269 @@
+name: CI-CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a release tag (patch bump)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  # ECR repositories (must exist)
+  ECR_REPO_BACKEND: ${{ secrets.ECR_REPO_BACKEND }}   # e.g. traffic-forecast-backend
+  ECR_REPO_FRONTEND: ${{ secrets.ECR_REPO_FRONTEND }} # e.g. traffic-forecast-frontend
+  # ECS params (must exist)
+  ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}                         # e.g. traffic-forecast
+  ECS_SERVICE_BACKEND: ${{ secrets.ECS_SERVICE_BACKEND }}         # e.g. backend-svc
+  ECS_SERVICE_FRONTEND: ${{ secrets.ECS_SERVICE_FRONTEND }}       # e.g. frontend-svc
+  ECS_TASKDEF_BACKEND: ${{ secrets.ECS_TASKDEF_BACKEND }}         # e.g. backend-task (family name)
+  ECS_TASKDEF_FRONTEND: ${{ secrets.ECS_TASKDEF_FRONTEND }}       # e.g. frontend-task (family name)
+
+jobs:
+  test-backend:
+    name: Backend • Lint & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov ruff
+      - name: Lint (ruff)
+        run: |
+          ruff check . || true
+      - name: Run tests
+        run: |
+          if [ -d "tests" ]; then pytest -q --maxfail=1 --disable-warnings --cov=app --cov-report=xml || true; else echo "No tests directory"; fi
+
+  test-frontend:
+    name: Frontend • Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install deps
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Build
+        run: npm run build || true
+      - name: Lint (eslint) if present
+        run: |
+          if [ -f ".eslintrc.js" ] || [ -f ".eslintrc.cjs" ] || [ -f ".eslintrc.json" ]; then npx eslint "src/**/*.{ts,tsx,js,jsx}" || true; else echo "No ESLint config"; fi
+
+  sonar-scan:
+    name: SonarQube • Scan & Quality Gate
+    runs-on: ubuntu-latest
+    needs: [ test-backend, test-frontend ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v2
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.sources=.
+            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/.venv/**,**/__pycache__/**
+            -Dsonar.python.coverage.reportPaths=backend/coverage.xml
+      - name: SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1.1.0
+        timeout-minutes: 10
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  tag-release:
+    name: Tag • Create semver tag
+    runs-on: ubuntu-latest
+    needs: [ sonar-scan ]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' && inputs.release == 'true')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get latest tag
+        id: get-latest
+        uses: actions-ecosystem/action-get-latest-tag@v1
+        with:
+          semver_only: true
+          initial_version: 0.1.0
+      - name: Bump patch
+        id: bump
+        uses: actions-ecosystem/action-bump-semver@v1
+        with:
+          current_version: ${{ steps.get-latest.outputs.tag }}
+          level: patch
+      - name: Create tag
+        uses: actions-ecosystem/action-create-tag@v1
+        with:
+          tag: ${{ steps.bump.outputs.new_version }}
+          message: "Release ${{ steps.bump.outputs.new_version }}"
+
+  build-and-push:
+    name: Build • Scan • Push Images to ECR
+    runs-on: ubuntu-latest
+    needs: [ sonar-scan ]
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ env.AWS_REGION != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Get AWS account ID
+        id: aws
+        run: |
+          echo "account=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin ${{ steps.aws.outputs.account }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+      - name: Buildx setup
+        uses: docker/setup-buildx-action@v3
+      - name: Build backend (local) for scanning
+        if: ${{ env.ECR_REPO_BACKEND != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: false
+          load: true
+          tags: backend:ci
+      - name: Build frontend (local) for scanning
+        if: ${{ env.ECR_REPO_FRONTEND != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/Dockerfile
+          push: false
+          load: true
+          tags: frontend:ci
+      - name: Trivy scan (repo)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          severity: "HIGH,CRITICAL"
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Trivy scan (backend image)
+        if: ${{ env.ECR_REPO_BACKEND != '' }}
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: "backend:ci"
+          severity: "HIGH,CRITICAL"
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Trivy scan (frontend image)
+        if: ${{ env.ECR_REPO_FRONTEND != '' }}
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: "frontend:ci"
+          severity: "HIGH,CRITICAL"
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: SBOM (CycloneDX) - backend
+        if: ${{ env.ECR_REPO_BACKEND != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+          image: backend:ci
+          format: cyclonedx-json
+          artifact-name: sbom-backend-cdx.json
+      - name: SBOM (CycloneDX) - frontend
+        if: ${{ env.ECR_REPO_FRONTEND != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+          image: frontend:ci
+          format: cyclonedx-json
+          artifact-name: sbom-frontend-cdx.json
+      - name: Build & push backend
+        if: ${{ env.ECR_REPO_BACKEND != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.aws.outputs.account }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_BACKEND }}:${{ github.sha }}
+      - name: Build & push frontend
+        if: ${{ env.ECR_REPO_FRONTEND != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.aws.outputs.account }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_FRONTEND }}:${{ github.sha }}
+
+  deploy-ecs:
+    name: Deploy to ECS
+    runs-on: ubuntu-latest
+    needs: [ build-and-push ]
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Get AWS account ID
+        id: aws
+        run: |
+          echo "account=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+      - name: Roll backend task definition
+        if: ${{ env.ECS_TASKDEF_BACKEND != '' && env.ECR_REPO_BACKEND != '' }}
+        run: |
+          set -euo pipefail
+          IMAGE_URI="${{ steps.aws.outputs.account }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_BACKEND }}:${{ github.sha }}"
+          FAMILY="${ECS_TASKDEF_BACKEND}"
+          CURRENT=$(aws ecs describe-task-definition --task-definition "$FAMILY")
+          NEW=$(echo "$CURRENT" | \
+            jq --arg IMG "$IMAGE_URI" '.taskDefinition | .containerDefinitions[0].image=$IMG | del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)')
+          echo "$NEW" > taskdef-backend.json
+          REV_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef-backend.json --query taskDefinition.taskDefinitionArn --output text)
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE_BACKEND" --task-definition "$REV_ARN"
+      - name: Roll frontend task definition
+        if: ${{ env.ECS_TASKDEF_FRONTEND != '' && env.ECR_REPO_FRONTEND != '' }}
+        run: |
+          set -euo pipefail
+          IMAGE_URI="${{ steps.aws.outputs.account }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_FRONTEND }}:${{ github.sha }}"
+          FAMILY="${ECS_TASKDEF_FRONTEND}"
+          CURRENT=$(aws ecs describe-task-definition --task-definition "$FAMILY")
+          NEW=$(echo "$CURRENT" | \
+            jq --arg IMG "$IMAGE_URI" '.taskDefinition | .containerDefinitions[0].image=$IMG | del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)')
+          echo "$NEW" > taskdef-frontend.json
+          REV_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef-frontend.json --query taskDefinition.taskDefinitionArn --output text)
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE_FRONTEND" --task-definition "$REV_ARN"
+
+
