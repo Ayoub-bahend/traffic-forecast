@@ -12,4 +12,5 @@ def predict_traffic(data: PredictionRequest):
     Predict traffic congestion based on input data.
     """
     # Mock response for now
+    # You can use the codes to influence a mock prediction if desired
     return {"prediction": "low", "confidence": 0.95}
